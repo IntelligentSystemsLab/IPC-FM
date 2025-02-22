@@ -1,0 +1,42 @@
+day_of_week,age,female,driving_license,bus_scale,car_ownership,faretype,purpose,fueltype,start_time,travel_month,travel_year,pt_n_interchanges,distance
+,0-20 years old,male,no_driving_lincese,0%,no car,16+,B,Average_Car,0-6 o'clock,,2012,0,0-1km
+Monday,21-40 years old,Female,driving_lincese,50%,less than one car,child,HBW,Diesel_Car,6-12 o'clock,Jan.,2013,1,1-2km
+Tuesday,41-60 years old,,,100%,one or more cars,"disabled	",HBE,Diesel_LGV,12-18 o'clock,Feb.,2014,2,2-3km
+Wednesday,61-80 years old,,,,,free,HBO,Hybrid_Car,18-24 o'clock,Mar.,2015,3,3-4km
+Thursday,81-100 years old,,,,,full,NHBO,Petrol_Car,,Apr.,,4,4-5km
+Friday,,,,,,,,Petrol_LGV,,May.,,,5-6km
+Saturday,,,,,,,,,,Jun.,,,6-7km
+Sunday,,,,,,,,,,Jul.,,,7-8km
+,,,,,,,,,,Aug.,,,8-9km
+,,,,,,,,,,Sept.,,,9-10km
+,,,,,,,,,,Oct.,,,10-11km
+,,,,,,,,,,Nov.,,,11-12km
+,,,,,,,,,,Dec.,,,12-13km
+,,,,,,,,,,,,,13-14km
+,,,,,,,,,,,,,14-15km
+,,,,,,,,,,,,,15-16km
+,,,,,,,,,,,,,16-17km
+,,,,,,,,,,,,,17-18km
+,,,,,,,,,,,,,18-19km
+,,,,,,,,,,,,,19-20km
+,,,,,,,,,,,,,20-21km
+,,,,,,,,,,,,,21-22km
+,,,,,,,,,,,,,22-23km
+,,,,,,,,,,,,,23-24km
+,,,,,,,,,,,,,24-25km
+,,,,,,,,,,,,,25-26km
+,,,,,,,,,,,,,26-27km
+,,,,,,,,,,,,,27-28km
+,,,,,,,,,,,,,28-29km
+,,,,,,,,,,,,,29-30km
+,,,,,,,,,,,,,30-31km
+,,,,,,,,,,,,,31-32km
+,,,,,,,,,,,,,32-33km
+,,,,,,,,,,,,,33-34km
+,,,,,,,,,,,,,34-35km
+,,,,,,,,,,,,,
+,,,,,,,,,,,,,
+,,,,,,,,,,,,,37-38km
+,,,,,,,,,,,,,
+,,,,,,,,,,,,,
+,,,,,,,,,,,,,40-41km

@@ -15,27 +15,27 @@ import matplotlib.pyplot as plt
 from utilities.functions import fixed_initial_net
 import argparse
 
-os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 parser = argparse.ArgumentParser(description="manual to this script")
-parser.add_argument("--model", type=str, default="MNL")
+parser.add_argument("--model", type=str, default="E_MNL")
 parser.add_argument("--model_num", type=int, default=100)
 parser.add_argument("--L1", type=float, default=0.0)
 parser.add_argument("--L2", type=float, default=0.0)
 parser.add_argument("--dropout", type=float, default=0.3)
-parser.add_argument("--epochs", type=int, default=500)
-parser.add_argument("--inner_lr", type=float, default=0.002)
+parser.add_argument("--epochs", type=int, default=100)
+parser.add_argument("--inner_lr", type=float, default=0.02)
 parser.add_argument("--save_file", type=str, default="default")
+parser.add_argument("--noise_param", type=float, default=0.0)
+parser.add_argument("--missing_rate", type=float, default=0.0)
 args = parser.parse_args()
 
 
 def train_test(
     model_name, Meta_net, epoch, inner_lr, directory, directory_model, directory_other
 ):
-    plt_x = np.arange(1, epoch + 1, 1)
-    fig = plt.figure()
-    ax2 = fig.add_subplot(111)
+   
     acc_l = []
     loss_C = []
     loss_t = []
@@ -43,29 +43,25 @@ def train_test(
     KAPPA = []
     acc_test = 0
     for i in range(epoch):
-        Loss = Meta_net.centralized_training(i)
+        Meta_net.centralized_training(i)
         accuracy, LL_test, f1, kappa = Meta_net.fedAvg_testing(
             directory_model, acc_test
         )
         if acc_test <= accuracy:
             acc_test = accuracy
         acc_l.append(accuracy)
-        loss_C.append(Loss)
+        # loss_C.append(Loss)
         loss_t.append(LL_test)
         F1_score.append(f1)
         KAPPA.append(kappa)
-        print(
-            "Epoch: "
-            + str(i)
-            + " Loss:"
-            + str(Loss)
-            + " Accuracy:"
-            + str(accuracy)
-            + " Loss_test:"
-            + str(LL_test)
-        )
-        print("F1-score:" + str(f1) + " KAPPA:" + str(kappa))
+        # 优化 print：减少频率，使用 flush 确保及时输出
+        if i % 10 == 0 or i == epoch - 1:  # 每10轮或最后一轮输出
+            print(f"Epoch: {i:3d} | Accuracy: {accuracy:.4f}")
 
+
+    plt_x = np.arange(1, epoch + 1, 1)
+    fig = plt.figure()
+    ax2 = fig.add_subplot(111)
     ax2.plot(plt_x, acc_l, color="orange", linestyle=":", label="accuracy_")
     ax2.legend()
     ax2.set_ylabel("accuracy value")
@@ -77,9 +73,6 @@ def train_test(
     acc_l = pd.DataFrame(acc_l, columns=[model_name])
     acc_l.to_csv(directory + "/central_acc_" + model_name + ".csv")
 
-    loss_C = pd.DataFrame(loss_C, columns=[model_name])
-    loss_C.to_csv(directory + "/central_train_loss_" + model_name + ".csv")
-
     loss_t = pd.DataFrame(loss_t, columns=[model_name])
     loss_t.to_csv(directory + "/central_test_loss_" + model_name + ".csv")
 
@@ -89,6 +82,8 @@ def train_test(
     KAPPA = pd.DataFrame(KAPPA)
     KAPPA.to_csv(directory_other + "/central_KAPPA_" + model_name + ".csv")
 
+    # loss_C = pd.DataFrame(loss_C, columns=[model_name])
+    # loss_C.to_csv(directory + "/central_train_loss_" + model_name + ".csv")
 
 def local_train(model_name, Meta_net, inner_lr, directory_model, directory_local):
     local_acc, local_LL, local_f1, local_kappa = Meta_net.local_train(
@@ -111,10 +106,12 @@ def local_train(model_name, Meta_net, inner_lr, directory_model, directory_local
 def main(model_name):
     model_num = args.model_num
     save_file = args.save_file
+    noise_param = args.noise_param
+    missing_rate = args.missing_rate
 
-    print(model_num)
-    fixed_initial_net(model_num)
-    print("Train model: " + str(model_name))
+    print(f"Model num: {model_num}, Noise param: {noise_param}")
+    fixed_initial_net(args.model_num)
+    print(f"Train model: {model_name}")
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     directory = str(model_num) + "/result/sgdmom_" + model_name + "_" + save_file
@@ -172,6 +169,9 @@ def main(model_name):
         L2=L2,
         dropout=dropout,
         inner_lr=inner_lr,
+        noise_param=noise_param,
+        # seed
+        seed=model_num
     )
     train_test(
         model_name,

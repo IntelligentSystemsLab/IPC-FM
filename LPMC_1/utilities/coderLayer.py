@@ -1,3 +1,10 @@
+'''
+Description: Your description
+Version: 1.0.0
+Date: 2025-03-05 18:53:12
+LastEditors: Kunxu Chen
+LastEditTime: 2025-09-24 11:24:57
+'''
 # -*- coding: utf-8 -*-
 """
 @filename:coderLayer.py

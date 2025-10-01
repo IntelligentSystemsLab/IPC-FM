@@ -12,21 +12,22 @@ from sklearn.model_selection import train_test_split
 import torch.nn as nn
 from copy import deepcopy
 import sys
-from utilities.network_logit import MNL, E_MNL, L_MNL, ASU_DNN, T_MNL, ET_MNL
+from utilities.network_logit import MNL, E_MNL, L_MNL, ASU_DNN, T_ANN
 from utilities.client import MetaClient
-from utilities.data_manager import load_data
+from utilities.data_manager import load_data,add_positional_gaussian_noise,add_demographic_noise,add_missing_data,handle_missing_data
+import concurrent.futures
 
 sys.path.append("..")
 
 
 def model_choice(
     model_name,
-    networkSize,
-    hidden_layers,
     beta_num,
     extra_feature,
-    NUM_UNIQUE_CATS,
     choices_num,
+    NUM_UNIQUE_CATS,
+    networkSize,
+    hidden_layers,
 ):
     model = 0
     if model_name == "MNL":
@@ -37,14 +38,14 @@ def model_choice(
         model = E_MNL(beta_num, extra_feature, choices_num, NUM_UNIQUE_CATS)
     if model_name == "L_MNL":
         model = L_MNL(
-            networkSize,
-            hidden_layers,
             beta_num,
             extra_feature,
             choices_num,
+            networkSize,
+            hidden_layers,
         )
-    if model_name == "ET_MNL":
-        model = ET_MNL(beta_num, extra_feature, choices_num, NUM_UNIQUE_CATS)
+    if model_name == "T_ANN":
+        model = T_ANN(beta_num, extra_feature, choices_num, NUM_UNIQUE_CATS)
     return model
 
 
@@ -86,17 +87,13 @@ class MetaServer(Server):
     def __init__(
         self,
         device,
-        # mode
         centralized=0,
         mode="_fomaml",
-        # data split
         test_client_prop=0.3,
         spt_prop=0.5,
-        # model
         model_name="L_MNL",
         networkSize=128,
         hidden_layers=1,
-        # hyper-parameters
         batch_size=16,
         beta_num=5,
         extra_feature=14,
@@ -107,9 +104,16 @@ class MetaServer(Server):
         dropout=0.3,
         inner_lr=0.002,
         outer_lr=0.002,
+        noise_param=0.0,
+        missing_rate=0.0,
+        missing_type="random",
+        missing_handle="mean",
+        # 性能优化参数
+        max_workers=16,
         # local training
         local_metatrain_epoch=1,
         local_metatest_epoch=2,
+        seed=42,
     ):
         super(MetaServer, self).__init__(
             device,
@@ -124,6 +128,7 @@ class MetaServer(Server):
         self.local_metatrain_epoch = local_metatrain_epoch
         self.local_metatest_epoch = local_metatest_epoch
         self.spt_prop = spt_prop
+        self.max_workers = max_workers  # 存储线程池大小
         self.train_clients = []  # 存储的client
         self.test_clients = []  # 测试的client
         self.train_mode = mode
@@ -140,15 +145,34 @@ class MetaServer(Server):
         train_id, test_id = train_test_split(
             people_list, test_size=test_client_prop, random_state=3
         )
-
+        positions_main=[(3, 0), (3, 1), (3, 2), (4, 2), (3, 3), (4, 3)]
         dataset_main_train, dataset_main_test = [], []
         dataset_extra_train, dataset_extra_test = [], []
         for train_index in train_id:
             dataset_main_train.append(dataset_main_all[train_index])
             dataset_extra_train.append(dataset_extra_all[train_index])
         for test_index in test_id:
-            dataset_main_test.append(dataset_main_all[test_index])
-            dataset_extra_test.append(dataset_extra_all[test_index])
+            # 添加缺失数据模拟
+            if noise_param > 0:
+                dataset_main_noise = add_positional_gaussian_noise(dataset_main_all[test_index], positions=positions_main, noise_std=noise_param, seed=seed)
+                dataset_extra_noise = add_demographic_noise(dataset_extra_all[test_index], label_noise_rate=noise_param, seed=seed)
+                dataset_main_test.append(dataset_main_noise)
+                dataset_extra_test.append(dataset_extra_noise)
+            elif missing_rate > 0:
+                # 为主要特征数据添加缺失值
+                dataset_main_missing = add_missing_data(dataset_main_noise, missing_rate=missing_rate, 
+                                                      missing_type=missing_type, seed=seed)
+                dataset_main_handled = handle_missing_data(dataset_main_missing, method=missing_handle, seed=seed)
+                
+                # 为额外特征数据添加缺失值
+                dataset_extra_missing = add_missing_data(dataset_extra_noise, missing_rate=missing_rate, 
+                                                       missing_type=missing_type, seed=seed)
+                dataset_extra_handled = handle_missing_data(dataset_extra_missing, method=missing_handle, seed=seed)
+                dataset_main_test.append(dataset_main_handled)
+                dataset_extra_test.append(dataset_extra_handled)
+            else:
+                dataset_main_test.append(dataset_main_all[test_index])
+                dataset_extra_test.append(dataset_extra_all[test_index])
 
         if centralized:
             model = deepcopy(self.net)
@@ -236,42 +260,55 @@ class MetaServer(Server):
             )
 
     def centralized_training(self, round):
-        Loss_all = self.train_clients[0].local_fedAvg_train()
+        self.train_clients[0].local_fedAvg_train()
         model_param_clients = self.train_clients[0].net.state_dict()
         self.net.load_state_dict(model_param_clients, strict=True)
-        return Loss_all
+
 
     def sync_training(self, round):
         weight = []
         id_train = list(range(len(self.train_clients)))
-        for id, index in enumerate(id_train):
-            self.train_clients[index].refresh(self.net)
-            if self.train_mode == "_fedAvg":
-                self.train_clients[index].local_fedAvg_train()
+        def train_one_client(client, net, train_mode, round):
+            client.refresh(net)
+            if train_mode == "_fedAvg":
+                client.local_fedAvg_train()
             else:
-                self.train_clients[index].local_fomaml_train()
-            self.train_clients[index].epoch = round
-            weight.append(1)
-
+                client.local_fomaml_train()
+            client.epoch = round
+            
+            # 返回数据量作为权重（更合理的聚合方式）
+            return 1
+        # 使用可配置的线程数
+        max_workers = getattr(self, 'max_workers', 16)
+        # 限制线程数不超过客户端数量
+        max_workers = min(max_workers, len(self.train_clients))
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            for index in id_train:
+                client = self.train_clients[index]
+                futures.append(executor.submit(train_one_client, client, self.net, self.train_mode, round))
+            weight = [future.result() for future in futures]
+        # 标准化权重
         weight = np.array(weight)
         weight = weight / weight.sum()
-        for id, index in enumerate(id_train):
-            for w, w_t in zip(
-                self.net.parameters(), self.train_clients[index].net.parameters()
-            ):
-                if w is None or id == 0:
-                    w.data = torch.zeros_like(w).to(self.device)
-                if w_t is None:
-                    w_t = torch.zeros_like(w).to(self.device)
-                w.data.add_(w_t.data * weight[index])
+        
+        # 修复聚合逻辑：正确的联邦平均
+        with torch.no_grad():
+            for param_idx, server_param in enumerate(self.net.parameters()):
+                # 重置服务器参数为零
+                server_param.data.zero_()
+                
+                # 累加所有客户端的加权参数
+                for client_idx, client_weight in enumerate(weight):
+                    client_param = list(self.train_clients[client_idx].net.parameters())[param_idx]
+                    server_param.data.add_(client_param.data * client_weight)
 
     def fedAvg_testing(self, directory_model, acc_test):
-        Flag = 0
-        if (self.model_name == "E_MNL") or (self.model_name == "ET_MNL"):
-            state = {"model": self.net, "Label": self.saqure, "Name": self.model_name}
+        if (self.model_name == "E_MNL") or (self.model_name == "T_ANN"):
+            state = {"model": self.net.state_dict(), "Label": self.saqure, "Name": self.model_name}
             torch.save(state, directory_model + "/state.pth")
-            Flag = 1
-        torch.save(self.net, directory_model + "/network.pth")
+        torch.save(self.net.state_dict(), directory_model + "/network.pth")
         id_test = list(range(len(self.test_clients)))
         init_true_total = 0
         size_total = 0
@@ -292,16 +329,11 @@ class MetaServer(Server):
         f1 = f1_score(Actual, Predict, average="macro")
         kappa = cohen_kappa_score(Actual, Predict)
         acc_init = acc_init.cpu().numpy()
-        if acc_init >= acc_test:
-            if Flag:
-                torch.save(state, directory_model + "/best_state.pth")
-            else:
-                torch.save(self.net, directory_model + "/best_state.pth")
         return acc_init, LL_test, f1, kappa
 
     def local_train(self, directory_model, max_local):
-        model = torch.load(directory_model + "/network.pth")
-        model_param_clients = model.state_dict()
+        # model = torch.load(directory_model + "/network.pth",weights_only=True)
+        model_param_clients = torch.load(directory_model + "/network.pth",weights_only=True)
         self.net.load_state_dict(model_param_clients)
         id_test = list(range(len(self.test_clients)))
         acc_test = []

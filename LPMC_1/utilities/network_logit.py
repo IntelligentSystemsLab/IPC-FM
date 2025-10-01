@@ -117,68 +117,21 @@ class Embed_New(nn.Module):
         return Q_train
 
 
-class T_MNL(nn.Module):
-    def __init__(self, beta_num, nExtraFeatures, choices_num, unique_cats_num):
-        super(T_MNL, self).__init__()
-        self.choice = choices_num
+class T_ANN(nn.Module):
+    def __init__(self, beta_num, nExtraFeatures, choices_num, unique_cats_num, dropout=0.3):
+        super(T_ANN, self).__init__()
         self.main_model = nn.Conv2d(1, 1, kernel_size=(beta_num, 1), stride=(1, 1), bias=False)
-        self.transformer = Transformer(n_src_vocab=unique_cats_num, choice=choices_num, n_head=choices_num,
-                                       nExtraFeatures=nExtraFeatures, d_model=choices_num)
-        self.apply(_init_vit_weights)
-
-    def forward(self, x, q):
-        x = self.main_model(x)
-        q = self.transformer(q)
-        x = x.reshape(-1, x.shape[3])
-        logits = torch.add(x, q)
-        return logits
-
-
-class Transformer(nn.Module):
-    def __init__(self, n_src_vocab, choice, nExtraFeatures, d_model=3, n_layers=1, n_head=3, d_k=4, dropout=0.3):
-        super(Transformer, self).__init__()
-        self.src_learning_emb = nn.Embedding(n_src_vocab, d_model)
-        self.drop = nn.Dropout(p=dropout)
-        self.layer_norm = nn.LayerNorm(nExtraFeatures, eps=1e-6)
-        self.Block = nn.ModuleList([
-            EncoderLayer(nExtraFeatures, nExtraFeatures * 4, n_head, d_k, dropout=0.1)
-            for _ in range(n_layers)])
-        self.linear = nn.Sequential(
-            nn.Linear(d_model * nExtraFeatures, 20),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(20, 20),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(20, choice),
-        )
-
-    def forward(self, x):
-        # -- Forward
-        x = self.src_learning_emb(x)
-        x = self.drop(x)
-        x = x.reshape(-1, x.shape[2], x.shape[1])
-        x = self.layer_norm(x)
-        for enc_layer in self.Block:
-            x = enc_layer(x)
-        x = x.reshape(x.shape[0], -1)
-        x = self.linear(x)
-        return x
-
-
-class ET_MNL(nn.Module):
-    def __init__(self, beta_num, nExtraFeatures, choices_num, unique_cats_num):
-        super(ET_MNL, self).__init__()
-        self.main_model = nn.Conv2d(1, 1, kernel_size=(beta_num, 1), stride=(1, 1), bias=False)
-        self.extra_model = Embed_Transformer(n_src_vocab=unique_cats_num, choice=choices_num, n_head=choices_num,
-                                             nExtraFeatures=nExtraFeatures, d_model=choices_num)
+        self.extra_model = Embed_New(nExtraFeatures, choices_num, unique_cats_num, dropout=dropout)
+        self.random_module = Embed_Transformer(n_src_vocab=unique_cats_num, choices_num=choices_num, n_head=1,
+                                               nExtraFeatures=nExtraFeatures, dropout=dropout)
         self.apply(_init_vit_weights)
         with torch.no_grad():
             self.extra_model.conv1.weight.data.clamp_(min=1e-6)
 
     def forward(self, X_train, Q_train):
         out_X = self.main_model(X_train)
-        out_QE, out_QT = self.extra_model(Q_train)
+        out_QE = self.extra_model(Q_train)
+        out_QT = self.random_module(Q_train)
         logits = torch.add(out_X, out_QE)
         logits = logits.reshape(-1, logits.shape[3])
         logits = torch.add(logits, out_QT)
@@ -186,49 +139,34 @@ class ET_MNL(nn.Module):
 
 
 class Embed_Transformer(nn.Module):
-    def __init__(self, n_src_vocab, choice, nExtraFeatures, d_model=3, n_layers=1, n_head=3, d_k=4, dropout=0.3):
+    def __init__(self, n_src_vocab, choices_num, nExtraFeatures, n_layers=1, n_head=1, d_k=14, dropout=0.3):
         super(Embed_Transformer, self).__init__()
-        self.choices_num = choice
 
-        self.src_learning_emb = nn.Embedding(n_src_vocab, choice + d_model)
+        self.src_learning_emb = nn.Embedding(n_src_vocab, choices_num)
         self.drop = nn.Dropout(p=dropout)
 
-        self.conv1 = nn.Conv2d(1, 1, kernel_size=(nExtraFeatures, 1), bias=False)
-
-        self.layer_norm = nn.LayerNorm(nExtraFeatures, eps=1e-6)
         self.Block = nn.ModuleList([
-            EncoderLayer(nExtraFeatures, nExtraFeatures * 4, n_head, d_k, dropout=0.1)
+            EncoderLayer(nExtraFeatures, nExtraFeatures*2, n_head, d_k, dropout=0.1)
             for _ in range(n_layers)])
         self.linear = nn.Sequential(
-            nn.Linear(d_model * nExtraFeatures, 20),
+            nn.Linear(choices_num * nExtraFeatures, choices_num * nExtraFeatures *2),
             nn.ReLU(),
             nn.Dropout(p=dropout),
-            nn.Linear(20, 20),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(20, choice),
+            nn.Linear(choices_num * nExtraFeatures *2, choices_num),
         )
 
     def forward(self, x):
         # -- Forward
         x = self.src_learning_emb(x)
-
-        out_Q1 = x[:, :, :self.choices_num]
-        out_Q2 = x[:, :, self.choices_num:]
-
-        out_Q1 = self.drop(out_Q1)
-        out_Q1 = out_Q1.reshape(-1, 1, out_Q1.shape[1], out_Q1.shape[2])
-        out_Q1 = self.conv1(out_Q1)
-
-        out_Q2 = self.drop(out_Q2)
-        out_Q2 = out_Q2.reshape(-1, out_Q2.shape[2], out_Q2.shape[1])
-        out_Q2 = self.layer_norm(out_Q2)
+        x = x.reshape(-1, x.shape[2], x.shape[1])
+        x = self.drop(x)
+        
         for enc_layer in self.Block:
-            out_Q2 = enc_layer(out_Q2)
-        out_Q2 = out_Q2.reshape(out_Q2.shape[0], -1)
-        out_Q2 = self.linear(out_Q2)
+            x = enc_layer(x)
+        x = x.reshape(x.shape[0], -1)
+        x = self.linear(x)
 
-        return out_Q1, out_Q2
+        return x
 
 
 class ASU_DNN(nn.Module):
@@ -267,3 +205,53 @@ class ASU_DNN(nn.Module):
         output_4 = self.x4_M(x[:, :, 3], q)
         output = torch.cat([output_1, output_2, output_3, output_4], axis=1)
         return output
+
+
+
+# class T_MNL(nn.Module):
+#     def __init__(self, beta_num, nExtraFeatures, choices_num, unique_cats_num):
+#         super(T_MNL, self).__init__()
+#         self.choice = choices_num
+#         self.main_model = nn.Conv2d(1, 1, kernel_size=(beta_num, 1), stride=(1, 1), bias=False)
+#         self.transformer = Transformer(n_src_vocab=unique_cats_num, choice=choices_num, n_head=choices_num,
+#                                        nExtraFeatures=nExtraFeatures, d_model=choices_num)
+#         self.apply(_init_vit_weights)
+
+#     def forward(self, x, q):
+#         x = self.main_model(x)
+#         q = self.transformer(q)
+#         x = x.reshape(-1, x.shape[3])
+#         logits = torch.add(x, q)
+#         return logits
+
+
+# class Transformer(nn.Module):
+#     def __init__(self, n_src_vocab, choice, nExtraFeatures, d_model=3, n_layers=1, n_head=3, d_k=4, dropout=0.3):
+#         super(Transformer, self).__init__()
+#         self.src_learning_emb = nn.Embedding(n_src_vocab, d_model)
+#         self.drop = nn.Dropout(p=dropout)
+#         self.layer_norm = nn.LayerNorm(nExtraFeatures, eps=1e-6)
+#         self.Block = nn.ModuleList([
+#             EncoderLayer(nExtraFeatures, nExtraFeatures * 4, n_head, d_k, dropout=0.1)
+#             for _ in range(n_layers)])
+#         self.linear = nn.Sequential(
+#             nn.Linear(d_model * nExtraFeatures, 20),
+#             nn.ReLU(),
+#             nn.Dropout(p=dropout),
+#             nn.Linear(20, 20),
+#             nn.ReLU(),
+#             nn.Dropout(p=dropout),
+#             nn.Linear(20, choice),
+#         )
+
+#     def forward(self, x):
+#         # -- Forward
+#         x = self.src_learning_emb(x)
+#         x = self.drop(x)
+#         x = x.reshape(-1, x.shape[2], x.shape[1])
+#         x = self.layer_norm(x)
+#         for enc_layer in self.Block:
+#             x = enc_layer(x)
+#         x = x.reshape(x.shape[0], -1)
+#         x = self.linear(x)
+#         return x

@@ -6,15 +6,223 @@
 """
 import numpy as np
 import os
-import random
 import pandas as pd
-import torch
 from torch.utils.data import DataLoader, Dataset
+
+
+def add_positional_gaussian_noise(data, positions, noise_std=0.0, seed=None):
+    """
+    为3D numpy矩阵的指定位置添加高斯噪声
+    
+    Args:
+        data: 3D numpy数组，shape为(n_samples, height, width)
+        positions: 位置列表，每个位置为(row, col)元组
+        noise_std: 高斯噪声的标准差，为0时不添加噪声
+        seed: 随机种子，用于确保结果可重现
+    
+    Returns:
+        添加噪声后的数据（原数据的副本）
+        
+    Example:
+        # 对shape为(10, 6, 4)的数据在指定位置添加噪声
+        positions = [(4, 0), (4, 1), (4, 2), (5, 2), (4, 3), (5, 3)]
+        noisy_data = add_positional_gaussian_noise(data, positions, noise_std=0.1)
+    """
+    if noise_std <= 0 or len(positions) == 0:
+        return data.copy()
+    
+    if seed is not None:
+        np.random.seed(seed)
+    
+    # 创建数据副本，避免修改原数据
+    noisy_data = data.copy()
+    
+    # 为每个样本在指定位置添加噪声
+    for sample_idx in range(data.shape[0]):
+        for row, col in positions:
+            # 检查位置是否在数据范围内
+            if 0 <= row < data.shape[1] and 0 <= col < data.shape[2]:
+                noise = np.random.normal(0, noise_std)
+                noisy_data[sample_idx, row, col] += noise
+            else:
+                print(f"警告: 位置 ({row}, {col}) 超出数据范围 {data.shape}")
+    
+    return noisy_data
+
+
+def add_gaussian_noise(data, noise_std=0.0, seed=None):
+    """
+    为数据添加高斯噪声
+    
+    Args:
+        data: 需要添加噪声的数据（numpy array）
+        noise_std: 高斯噪声的标准差，为0时不添加噪声
+        seed: 随机种子，用于确保结果可重现
+    
+    Returns:
+        添加噪声后的数据
+    """
+    if noise_std <= 0:
+        return data
+    
+    if seed is not None:
+        np.random.seed(seed)
+    
+    noise = np.random.normal(0, noise_std, data.shape)
+    return data + noise
+
+
+def add_label_noise(data, noise_rate=0.0, seed=None):
+    """
+    为分类标签添加噪声（模拟错误标注）
+    
+    Args:
+        data: 分类数据（numpy array）
+        noise_rate: 噪声比例，0-1之间，表示有多少比例的标签会被随机改变
+        seed: 随机种子
+    
+    Returns:
+        添加噪声后的数据
+    """
+    if noise_rate <= 0:
+        return data
+    
+    if seed is not None:
+        np.random.seed(seed)
+    
+    data_noisy = data.copy()
+    n_samples = len(data)
+    n_noise = int(n_samples * noise_rate)
+    
+    # 随机选择要添加噪声的样本
+    noise_indices = np.random.choice(n_samples, n_noise, replace=False)
+    unique_labels = np.unique(data)
+    
+    # 为选中的样本随机分配不同的标签
+    for idx in noise_indices:
+        # 排除当前标签，从其他标签中随机选择
+        other_labels = unique_labels[unique_labels != data[idx]]
+        if len(other_labels) > 0:
+            data_noisy[idx] = np.random.choice(other_labels)
+    
+    return data_noisy
+
+
+def add_missing_data(data, missing_rate=0.0, missing_type="random", seed=None):
+    """
+    为数据添加缺失值（模拟数据不完整场景）
+    
+    Args:
+        data: 输入数据 (numpy array)
+        missing_rate: 缺失比例 0-1之间
+        missing_type: 缺失类型 ("random", "feature", "sample", "pattern")
+        seed: 随机种子
+    
+    Returns:
+        包含缺失值的数据，缺失值用np.nan表示
+    """
+    if missing_rate <= 0:
+        return data
+    
+    if seed is not None:
+        np.random.seed(seed)
+    
+    data_missing = data.copy().astype(float)  # 转换为float以支持np.nan
+    
+    # 随机缺失：在整个数据中随机选择位置设为缺失
+    mask = np.random.rand(*data.shape) < missing_rate
+    data_missing[mask] = np.nan
+
+    return data_missing
+
+def handle_missing_data(data, method="mean", seed=None):
+    """
+    处理缺失数据
+    
+    Args:
+        data: 包含缺失值的数据
+        method: 处理方法 ( "mean", "mode")
+        seed: 随机种子
+    
+    Returns:
+        处理后的数据
+    """
+    if seed is not None:
+        np.random.seed(seed)
+    
+    data_processed = data.copy()
+    
+    if method == "mean":
+        # 用均值填充（仅适用于数值特征）
+        for col_idx in range(data_processed.shape[1]):
+            col_data = data_processed[:, col_idx]
+            if np.isnan(col_data).any():
+                mean_val = np.nanmean(col_data)
+                data_processed[np.isnan(col_data), col_idx] = mean_val
+                
+    elif method == "mode":
+        # 用众数填充（适用于分类特征）
+        for col_idx in range(data_processed.shape[1]):
+            col_data = data_processed[:, col_idx]
+            if np.isnan(col_data).any():
+                # 计算众数
+                valid_data = col_data[~np.isnan(col_data)]
+                if len(valid_data) > 0:
+                    unique_vals, counts = np.unique(valid_data, return_counts=True)
+                    mode_val = unique_vals[np.argmax(counts)]
+                    data_processed[np.isnan(col_data), col_idx] = mode_val
+
+    return data_processed
+
+
+def add_demographic_noise(data_ori, label_noise_rate=0.0, seed=None):
+    """
+    为个人信息特征添加噪声（模拟调研中的误差）
+    
+    Args:
+        data_ori: 原始数据DataFrame
+        noise_std: 连续特征的高斯噪声标准差
+        label_noise_rate: 分类特征的标签噪声比例
+        seed: 随机种子
+    
+    Returns:
+        添加噪声后的数据DataFrame
+    """
+    if label_noise_rate <= 0:
+        return data_ori
+    
+    data = data_ori.copy()
+    
+    if seed is not None:
+        np.random.seed(seed)
+
+   # 为分类型个人特征添加标签噪声
+    if label_noise_rate > 0:
+        # 性别（可能存在隐私考虑导致的错误申报）
+        data[:, 2] = add_label_noise(data[:, 2], label_noise_rate * 0.2, seed)  # 性别噪声较小
+        
+        # 驾驶执照（可能存在虚假申报）
+        data[:, 3] = add_label_noise(data[:, 3], label_noise_rate * 0.2, seed)
+
+        # 车辆拥有情况（可能存在社会期望偏差）
+        data[:, 5] = add_label_noise(data[:, 5], label_noise_rate * 0.2, seed)
+
+         # 票价类型（可能存在记忆偏差）
+        data[:, 6] = add_label_noise(data[:, 6], label_noise_rate * 0.2, seed)
+
+        # 出行目的（可能存在记忆偏差或隐私考虑）
+        data[:, 7] = add_label_noise(data[:, 7], label_noise_rate * 0.2, seed)
+
+        # 燃料类型（可能不确定或记忆模糊）
+        data[:, 8] = add_label_noise(data[:, 8], label_noise_rate * 0.2, seed)
+    
+    return data
 
 
 def process_data(data_ori, unique_catagory, model_name, saqure=None):
     X = []
     Q = []
+    
     household_id = data_ori['household_id'].values
     DoW = data_ori['day_of_week'].values
     age = (data_ori['age'].values / 20).astype(int)
@@ -33,7 +241,8 @@ def process_data(data_ori, unique_catagory, model_name, saqure=None):
     unique = [set(DoW), set(age), set(female), set(driving_license), set(bus_scale), set(car_ownership),
               set(faretype), set(purpose), set(fueltype), set(start_time), set(travel_month), set(travel_year),
               set(bus_interchange), set(distance)]
-    Q_all = np.array([DoW, age, female, driving_license, bus_scale, car_ownership, faretype, purpose, fueltype, start_time,travel_month, travel_year, bus_interchange, distance])
+    Q_all = np.array([DoW, age, female, driving_license, bus_scale, car_ownership, faretype, purpose, fueltype, 
+                      start_time,travel_month, travel_year, bus_interchange, distance])
     
     if model_name == 'L_MNL' or model_name == "ASU_DNN" or model_name == 'MNL' :
         Q_all = (Q_all - Q_all.mean(axis=0)) / (Q_all.std(axis=0))
@@ -87,155 +296,16 @@ def process_data(data_ori, unique_catagory, model_name, saqure=None):
         Q_house = Q_all[:, target_col_index]
         Q_house = np.swapaxes(Q_house, 0, 1)
 
-        # if model_name == "MNL":
-        #     Q_house = np.tile(Q_house[:, :, np.newaxis], reps=(1, 1, 4))
-        #     X_house = np.concatenate((Q_house, X_house), axis=1)
-        #     X.append(X_house)
-        #     Q.append(Q_house)
-        # else:
         X.append(X_house)
         Q.append(Q_house)
     return X, Q, saqure
 
 
-def load_data(unique_catagory,model_name):
+def load_data(unique_catagory, model_name):
     filePath = os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + '/data' + '/'
     data = pd.read_csv(filePath + 'LPMC_process' + '.csv')
-    main_data, extra_data, saqure = process_data(data, unique_catagory,model_name)
+    main_data, extra_data, saqure = process_data(data, unique_catagory, model_name)
     return main_data, extra_data, saqure
-
-def load_data_totest(unique_catagory,model_name, saqure):
-    filePath = os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + '/data' + '/'
-    data = pd.read_csv(filePath + 'LPMC_process' + '.csv')
-    main_data, extra_data, _ = process_data(data, unique_catagory,model_name, saqure)
-    return main_data, extra_data
-
-
-def swiss_load_client(filePath, fileInputName, filePart='',
-                      simpleArchitecture=False, lmnlArchitecture=False, write=True, split_type=0, split_num=1):
-    """
-    目标：生成每种目标的总的数据集 return一个数组 users_all[id]为每个人的所有数据
-    Prepares Input for Models. Based on Dataset, utility functions and number of alternatives
-    The first input is the X feature set, it ressembles the utility functions.
-        - The shape is (n x betas+1 x alternatives), where the added +1 is the label.
-    The second input is the Q feature set.
-        - The shape is (n x Q_features x 1)
-    :param filePath:        path to dataset
-    :param fileInputName:   name of dataset
-    :param filePart:        dataset extension (e.g. _train, _test)
-    :param simpleArchitecture:  Smaller Utility Function, only TT, COST, HE
-    simpleArchitecture = False & lmnlArchitecture = False :ASC ，TT, COST, HE, GA, AGE, LUGGAGE, SEATS, CHOICE
-    :param lmnlArchitecture:    L-MNL Utility Function (Small and no ASC)
-    :param write:           Save X and Q inputs in a .npy
-    :return:    main_data: X inputs Table with Choice label,
-                extra_data: Q inputs vector
-    """
-    extend = ''
-    if simpleArchitecture:
-        extend = '_simple'
-    if lmnlArchitecture:
-        extend = '_noASC'
-
-    train_data_name = filePath + fileInputName + extend + filePart + '.npy'  # 生成训练集
-
-    filePath = os.path.dirname(os.path.dirname(os.path.realpath(__file__))) + '/data' + '/'
-    data = np.loadtxt(filePath + 'swissmetro' + filePart + '.dat', skiprows=1)  # new是重新切分的
-
-    # 集中处理数据
-
-    CHOICE = data[:, -1]
-    PURPOSE = data[:, 4]
-    CAR_AV = data[:, 16]
-    TRAIN_AV = data[:, 15]
-    SM_AV = data[:, 17]
-
-    # 删除AV==0 或 CHOICE ==0 的people
-    exclude = ((CAR_AV == 0) + (CHOICE == 0) + (TRAIN_AV == 0) + (SM_AV == 0)) > 0
-    exclude_list = [i for i, k in enumerate(exclude) if k > 0]
-
-    data = np.delete(data, exclude_list, axis=0)
-
-    ID = np.unique(data[:, 3])
-    people_num = len(ID)
-    data_num = len(data)
-
-    total_data = data  # [9036*28]
-    total_data = np.array(np.split(total_data, people_num))
-    if split_type == 0:
-        CHOICE = total_data[:, :, -1]  # 1004*9
-        TRAIN_TT = total_data[:, :, 18]
-        TRAIN_COST = total_data[:, :, 19] * (total_data[:, :, 12] == 0)  # if he owns a GA 如果有GA cost为0
-        SM_TT = total_data[:, :, 21]
-        SM_COST = total_data[:, :, 22] * (total_data[:, :, 12] == 0)  # if he owns a GA
-        CAR_TT = total_data[:, :, 25]
-        CAR_CO = total_data[:, :, 26]
-
-        TRAIN_HE = total_data[:, :, 20]
-        SM_HE = total_data[:, :, 23]
-        GA = total_data[:, :, 12]
-        AGE = total_data[:, :, 9]
-
-        LUGGAGE = total_data[:, :, 8]
-        SM_SEATS = total_data[:, :, 24]
-
-        scale = 100.0
-
-        TRAIN_TT_SCALED = TRAIN_TT / scale
-        TRAIN_COST_SCALED = TRAIN_COST / scale
-        SM_TT_SCALED = SM_TT / scale
-        SM_COST_SCALED = SM_COST / scale
-        CAR_TT_SCALED = CAR_TT / scale
-        CAR_CO_SCALED = CAR_CO / scale
-        TRAIN_HE_SCALED = TRAIN_HE / scale
-        SM_HE_SCALED = SM_HE / scale
-
-        ASCs = np.ones((people_num, int(data_num / people_num)))
-        ZEROs = np.zeros((people_num, int(data_num / people_num)))
-
-        CHOICE_CAR = (CHOICE == 3)
-        CHOICE_SM = (CHOICE == 2)
-        CHOICE_TRAIN = (CHOICE == 1)
-
-        main_data = np.array(
-            [[ZEROs, ZEROs, TRAIN_TT_SCALED, TRAIN_COST_SCALED, TRAIN_HE_SCALED, GA, AGE, ZEROs, ZEROs, CHOICE_TRAIN],
-             [ZEROs, ASCs, SM_TT_SCALED, SM_COST_SCALED, SM_HE_SCALED, GA, ZEROs, ZEROs, SM_SEATS, CHOICE_SM],
-             [ASCs, ZEROs, CAR_TT_SCALED, CAR_CO_SCALED, ZEROs, ZEROs, ZEROs, LUGGAGE, ZEROs, CHOICE_CAR]])
-        # 前两项用于构建ASC ，TT, COST, HE, GA, AGE, LUGGAGE, SEATS, CHOICE 输入线性模型 X1 7+2(ASC)个特征输入线性
-
-        if simpleArchitecture:
-            main_data = np.array(
-                [[ZEROs, ZEROs, TRAIN_TT_SCALED, TRAIN_COST_SCALED, TRAIN_HE_SCALED, CHOICE_TRAIN],
-                 [ZEROs, ASCs, SM_TT_SCALED, SM_COST_SCALED, SM_HE_SCALED, CHOICE_SM],
-                 [ASCs, ZEROs, CAR_TT_SCALED, CAR_CO_SCALED, ZEROs, CHOICE_CAR]])
-        # 前两项用于构建ASC ，TT, COST, HE, CHOICE 输入线性模型 X2 7个特征输入非线性
-
-        if lmnlArchitecture:
-            main_data = np.array(
-                [[TRAIN_TT_SCALED, TRAIN_COST_SCALED, TRAIN_HE_SCALED, CHOICE_TRAIN],
-                 [SM_TT_SCALED, SM_COST_SCALED, SM_HE_SCALED, CHOICE_SM],
-                 [CAR_TT_SCALED, CAR_CO_SCALED, ZEROs, CHOICE_CAR]])
-        # TT, COST, HE, CHOICE 输入线性模型 没有ASC X2 3个特征输入线性
-
-        main_data = np.swapaxes(np.swapaxes(np.swapaxes(main_data, 0, 2), 1, 3), 2, 3)  # (people, menu, beta, choice)
-
-        if simpleArchitecture or lmnlArchitecture:
-            # Hybrid Simple
-            extra_data = np.delete(total_data, [18, 19, 21, 22, 25, 26, 27, 20, 23, 0, 1, 2, 3, 15, 16, 17], axis=2)
-            # if simpleArchitecture:
-            extra_data[:, :, 7][extra_data[:, :, 7] == 0] = 1
-            # 18,19,21,22,25,26分别是TT,CO; 20,23是HE X2线性部分的特征；27是CHOICE；0,1,2,3是GROUP,SURVEY,SP,ID；15, 16,17是AV
-            # 保留12个特征
-        else:
-            # Hybrid MNL
-            extra_data = np.delete(total_data,
-                                   [18, 19, 21, 22, 25, 26, 27, 20, 23, 0, 1, 2, 3, 8, 9, 12, 24, 15, 16, 17],
-                                   axis=2)
-            # 8, 9, 12, 24是 LUGGAGE,AGE,GA,SEATS
-            # 保留8个特征 X1
-            # (people, menu, feature)
-        print(main_data.shape, extra_data.shape)
-    return main_data, extra_data
-
 
 class myData(Dataset):
     """An abstract Dataset class wrapped around Pytorch Dataset class.
